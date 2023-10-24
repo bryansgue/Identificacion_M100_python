@@ -111,38 +111,25 @@ def odometry_call_back(odom_msg):
     wzd = odom_msg.twist.twist.angular.z
     return None
 
-
-
-
-# Función para limitar la amplitud máxima
-def limit_amplitude(signal, max_amplitude):
-    peak_value = np.max(np.abs(signal))
-    if peak_value > max_amplitude:
-        signal *= max_amplitude / peak_value
-    return signal
-
-# Función para suavizar la señal
-def smooth_signal(signal):
-    return savgol_filter(signal, window_length=51, polyorder=3)
-
-# Generar señales combinadas con armónicos y entradas de escalón
-def generate_signal(time, index):
-    signal = np.zeros_like(time)
-    if index == 0:
-        signal += 0.7 * np.cos(0.5 * time) + 0.2 * np.sin(0.4 * time)
-    elif index == 1:
-        signal += 0.4 * np.cos(2 * time) - 0.2 * np.cos(5 * time)
-    elif index == 2:
-        signal += 0.3 * np.cos(2.5 * time) + 0.2 * np.sin(1.2 * time)
-    elif index == 3:
-        signal += 0.5 * np.sin(0.8 * time) + 0.3 * np.cos(1.5 * time)
-    signal[(time >= 2) & (time < 5)] += 0.3  # Entrada de escalón en 2 <= t < 5 segundos
-    signal[(time >= 10) & (time < 15)] += 0.3  # Entrada de escalón en 10 <= t < 15 segundos
-    signal[(time >= 7) & (time < 9)] = 0  # Amplitud cero en 7 <= t < 9 segundos
-    signal[(time >= 12) & (time < 14)] = 0  # Amplitud cero en 12 <= t < 14 segundos
-    signal[(time >= 17) & (time < 19)] = 0  # Amplitud cero en 17 <= t < 19 segundos
-    return signal
-
+def PID_function(vz_d, vz, Kp, Kd, Ki, error_history, error_prev):
+    # Calcular el error en el instante actual
+    error = np.tanh(vz_d - vz)
+    
+    # Calcular la acción proporcional
+    u_P = Kp * error
+    
+    # Calcular la acción derivativa
+    
+    u_D = Kd * (error - error_prev)
+    
+    # Calcular la acción integral
+    accumulated_error = error_history
+    u_I = Ki * accumulated_error
+    
+    # Calcular la señal de control total
+    u_total = u_P + u_D + u_I 
+    
+    return u_total
 
 def main(control_pub, ref_msg):
 
@@ -157,7 +144,7 @@ def main(control_pub, ref_msg):
     # States System pose
     states = np.zeros((22, t.shape[0]+1), dtype=np.double)
 
-        ## BOdy velocity
+    # BOdy velocity
     h = np.zeros((3, t.shape[0]+1), dtype=np.double)
     euler = np.zeros((3, t.shape[0]+1), dtype=np.double) 
     v = np.zeros((3, t.shape[0]+1), dtype=np.double)
@@ -165,71 +152,33 @@ def main(control_pub, ref_msg):
     omega = np.zeros((3, t.shape[0]+1), dtype=np.double)
     quat = np.zeros((4, t.shape[0]+1), dtype=np.double)
     u = np.zeros((3, t.shape[0]+1), dtype=np.double)
+
+    # Controlador Cinematico
+    hd = np.zeros((4, t.shape[0]+1), dtype=np.double)
+    hdp = np.zeros((4, t.shape[0]+1), dtype=np.double)
+    he = np.zeros((4, t.shape[0]+1), dtype=np.double)
+    uc = np.zeros((4, t.shape[0]+1), dtype=np.double)
+    psidp = np.zeros((1, t.shape[0]+1), dtype=np.double)
+
+    J = np.zeros((4, 4))
+    K1 = np.diag([1,1,1,1])  # Distribuir los primeros 4 elementos de Gains en la matriz K1
+    K2 = np.diag([1,1,1,1]) 
+
     
-
-
     # Control signals
     u_ref = np.zeros((4, t.shape[0]), dtype=np.double)
 
     # Define Control Action
 
-    experiment_number = 6
-    
-    # Vamos a evaluar diferentes rangos de puntaje
-    if experiment_number == 1:
-        print("Experimento: 1")
-        u_ref[0, :]=  2.4*np.cos(1*t)+0.3*np.sin(0.4*t)
-        u_ref[1, :] = 2.2*np.cos(t)*np.cos(0.5*t)+0.25*np.sin(0.7*t)
-        u_ref[2, :] = 2.5*np.sin(t)*np.cos(0.5*t) 
-        u_ref[3, :] = 1.5*np.sin(t)*np.sin(0.5*t)+0.3*np.cos(0.7*t)*np.cos(0.3*t)
-    elif experiment_number == 2:
-        print("Experimento: 2")
-        u_ref[0, :]=  1.7*np.cos(0.5*t)+0.2*np.sin(0.4*t)
-        u_ref[1, :] = 1.1*np.cos(1*t)+0.1*np.cos(2*t)
-        u_ref[2, :] = 1.1*np.cos(2*t)+0.1*np.cos(5*t) 
-        u_ref[3, :] = 1*np.sin(2*t)
-    elif experiment_number == 3:
-        print("Experimento: 3")
-        u_ref[0, :]=  1.5*(0.7*np.cos(1*t)+0.5*np.sin(3*t))
-        u_ref[1, :] = 1.6*(0.7*np.cos(2*t)+0.2*np.sin(0.4*t))
-        u_ref[2, :] = 1.1*np.cos(2*t)+0.1*np.cos(5*t) 
-        u_ref[3, :] = 0.1*np.sin(2*t) #(0.25 *np.cos(2*t)+ 0.25 *np.sin(0.4*t))
-    elif experiment_number == 4:
-        print("Experimento: 4")
-        u_ref[0, :]=  0.9*np.sin(0.5*t)*np.cos(0.5*t)+0.15*np.cos(0.5*t)
-        u_ref[1, :] = 0.4*np.cos(t)+0.3*np.cos(0.5*t)
-        u_ref[2, :] = 0.1*np.sin(0.6*t)*np.sin(0.5*t)+0.3*np.cos(0.7*t)*np.cos(0.4*t)
-        u_ref[3, :] = 0.3*np.sin(0.2*t)*np.cos(0.4*t)-0.15*np.cos(t)
-    elif experiment_number == 5:
-        print("Experimento: 5")
-        u_ref[0, :]=  1.7*np.cos(0.5*t)+0.2*np.sin(0.4*t)
-        u_ref[1, :] = 1.1*np.cos(1*t)+0.1*np.cos(2*t)
-        u_ref[2, :] = 1.1*np.cos(1*t)+0.1*np.cos(2*t) 
-        u_ref[3, :] = 1*np.sin(2*t)
-    elif experiment_number == 6:
-        print("Experimento: 6")
-        u_ref[0, :]=  1.5*np.sin(1*t)*np.cos(0.1*t)-0.15*np.cos(1*t)
-        u_ref[1, :] = 1.4*np.cos(t)+0.3*np.cos(0.9*t)
-        u_ref[2, :] = 1.5*np.sin(0.75*t)*np.cos(0.1*t)-0.15*np.cos(t) 
-        u_ref[3, :] = 1.25 *np.cos(0.5*t)+ 0.25 *np.sin(0.4*t)
-    elif experiment_number == 10:
-        for i in range(4):
-            signal = generate_signal(t, i)
-            if i in [1, 2]:  # Aplicar suavizado solo a las señales 2 y 3
-                u_ref[i, :] = smooth_signal(limit_amplitude(signal, 3.3))
-            else:
-                u_ref[i, :] = limit_amplitude(signal, 3.3)
-                
-    else:
-        print("Sin experimeto")
-        u_ref[0, :]=  0
-        u_ref[1, :] = 0
-        u_ref[2, :] = 0
-        u_ref[3, :] = 0
+    print("Sin experimeto")
+    u_ref[0, :]=  0
+    u_ref[1, :] = 0
+    u_ref[2, :] = 0
+    u_ref[3, :] = 0
     
 
-
-    for k in range(0, 100):
+    # INICIALIZA EL EXPERIMENTO
+    for k in range(0, 50):
         tic = time.time()
         
         while (time.time() - tic <= ts):
@@ -246,22 +195,130 @@ def main(control_pub, ref_msg):
 
         print("Initializing the experiment")
     
+
+    # PID parameters
+    error_history_ux = 0
+    error_prev_ux = 0
+
+    error_history_uy = 0
+    error_prev_uy = 0
+
+    # Parámetros del controlador PDI
+    Kp_ux = 0.25
+    Kd_ux = 0.001
+    Ki_ux = 0.006
+
+    Kp_uy = 0.25
+    Kd_uy = 0.001
+    Ki_uy = 0.006
+
+    # Tarea deseada
+    experiment_number = 12
+
+    if experiment_number == 11:
+        xref = lambda t: 5 * np.sin(8*0.04 * t) + 0.1
+        yref = lambda t: 5 * np.sin(8*0.08 * t) + 0.1
+        zref = lambda t: 3 * np.sin(0.25 * t) + 10
+
+        xref_p = lambda t: 5 *7* 0.04 * np.cos(8*0.04 * t)
+        yref_p = lambda t: 5 *7* 0.08 * np.cos(8*0.08 * t)
+        zref_p = lambda t: 3*0.1 * np.cos(0.25 * t)
+
+        xref_pp = lambda t: -5 *8* 0.04 * 0.04 * np.sin(8*0.04 * t)
+        yref_pp = lambda t: -5 *8* 0.08 * 0.08 * np.sin(8*0.08 * t)
+
+    elif experiment_number == 12:
+        xref = lambda t: (5 * np.sin(8 * 0.04 * t) + 0.1) * np.cos(0.2 * t)
+        yref = lambda t: (5 * np.sin(8 * 0.08 * t) + 0.1) * np.sin(0.2 * t)
+        zref = lambda t: 3 * np.sin(0.25 * t) + 10
+
+        xref_p = lambda t: 5 *7* 0.04 * np.cos(8*0.04 * t)
+        yref_p = lambda t: 5 *7* 0.08 * np.cos(8*0.08 * t)
+        zref_p = lambda t: 3*0.1 * np.cos(0.25 * t)
+
+        xref_pp = lambda t: -5 *8* 0.04 * 0.04 * np.sin(8*0.04 * t)
+        yref_pp = lambda t: -5 *8* 0.08 * 0.08 * np.sin(8*0.08 * t)
+    else:
+        print("Sin experimeto")
+
+    hxd = xref(t)
+    hyd = yref(t)
+    hzd = zref(t)
+
+    hxdp = xref_p(t)
+    hydp = yref_p(t)
+    hzdp = zref_p(t)
+
+    hxdpp = xref_pp(t)
+    hydpp = yref_pp(t)
+
+    psid = np.arctan2(hydp, hxdp)
+    
+    max_psidp = (5/6) * np.pi
+
+    for k in range(0, t.shape[0]):
+        if k > 0:
+            delta_psidp = (psid[k] - psid[k - 1]) / ts
+            # Aplicar la saturación a delta_psidp
+            delta_psidp = min(max_psidp, max(-max_psidp, delta_psidp))
+            psidp[0, k] = delta_psidp
+        else:
+            psidp[0, k] = psid[k] / ts
+
+    psidp[0, 0] = 0
+
+    
+    # COMEMIENZA LA IDENTIFICACION
     for k in range(0, t.shape[0]):
         tic = time.time()
+
+        # Controlador de bajo nivel 
+        hd[:, k] = [hxd[k], hyd[k], hzd[k], psid[k]]
+        hdp[:, k] = [hxdp[k], hydp[k], hzdp[k], psidp[0,k]]
+
+
+        psi = euler[2, k]
+        J[0, 0] = np.cos(psi)
+        J[0, 1] = -np.sin(psi)
+        J[1, 0] = np.sin(psi)
+        J[1, 1] = np.cos(psi)
+        J[2, 2] = 1
+        J[3, 3] = 1
+
+        he[:, k] = hd[:, k] -  np.hstack((h[:, k], psi))
+        uc[:, k] = np.linalg.pinv(J) @ (K1 @ np.tanh(K2 @ he[:, k]))
         
+        # PID UX
+        ux = u[0,k]
+        ux_ref = uc[0, k]
+        error_ux = np.tanh(ux_ref - ux)
+        error_history_ux = error_history_ux + error_ux
+        theta_PID  = PID_function(ux_ref, ux, Kp_ux, Kd_ux, Ki_ux, error_history_ux, error_prev_ux)
+
+        # PID VY
+        uy = u[1,k]
+        uy_ref = uc[1, k]
+        error_uy = np.tanh(uy_ref - uy)
+        error_history_uy = error_history_uy + error_uy
+        phi_PID  = PID_function(uy_ref, uy, Kp_uy, Kd_uy, Ki_uy, error_history_uy, error_prev_uy)
         
+
         # Send Control action to the system
-        #u_ref[1:4, k]=  [0,0,0]
-        send_reference(u_ref[:, k], control_pub, ref_msg)
-
-
+        #u_ref[:, k] = [uc[2, k] , -phi_PID, theta_PID, uc[3, k]]
+        print(uc[:, k])
+        send_reference(uc[:, k], control_pub, ref_msg)
 
 
         # Loop_rate.sleep()
         while (time.time() - tic <= ts):
                 None
         toc = time.time() - tic 
-        print(toc)
+
+        #ERROR PID
+        error_prev_ux = error_ux
+        error_prev_uy = error_uy
+
+        #print(toc)
 
         # Save Data
         h[:, k+1] = get_pos()
@@ -284,14 +341,17 @@ def main(control_pub, ref_msg):
         
 
     states_data = {"states": states, "label": "states"}
-    u_ref_data = {"u_ref": u_ref, "label": "states_ref"}
+    T_ref_data = {"T_ref": u_ref, "label": "states_ref"}
     t_data = {"t": t, "label": "time"}
 
-    pwd= "/home/bryansgue/Doctoral_Research/Matlab/Identificacion_M100/IdentificacionAlgoritmos/Ident_Full_model_compact"
+    #pwd= "/home/bryansgue/Doctoral_Research/Matlab/Identificacion_M100/IdentificacionAlgoritmos/Ident_Full_model_compact"
+    
+    
+    
     
 
     savemat(os.path.join(pwd, "states_" + str(experiment_number) + ".mat"), states_data)
-    savemat(os.path.join(pwd, "u_ref_" + str(experiment_number) + ".mat"), u_ref_data)
+    savemat(os.path.join(pwd, "T_ref_" + str(experiment_number) + ".mat"), T_ref_data)
     savemat(os.path.join(pwd,"t_"+ str(experiment_number) + ".mat"), t_data)
 
 
